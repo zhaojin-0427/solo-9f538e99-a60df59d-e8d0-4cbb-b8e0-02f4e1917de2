@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>壁画裂缝定位图 · 对位更新操作台</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-mark">壁</span>
+      <div>
+        <h1>壁画裂缝定位图 · 对位更新操作台</h1>
+        <p class="subtitle">同比例 · 同朝向样片 ｜ 基准图固定，其余照片仅平移 ｜ SQLite 保存对位</p>
+      </div>
+    </div>
+    <nav class="topnav">
+      <a href="#map">总图</a>
+      <a href="#submit">新对位</a>
+      <a href="#alignments">对位台账</a>
+      <a href="#cracks">裂缝台账</a>
+      <a href="#history">处理记录</a>
+    </nav>
+  </div>
+</header>
+
+<main class="container">
+  {% block content %}{% endblock %}
+  <footer class="footer">
+    修复师在两张样片上点选同一处纹样并提交；系统在“最多撤下两条未复核对位”的范围内求最优更新。
+    无解时原图与对位保持不变。
+  </footer>
+</main>
+
+<script id="demo-data" type="application/json">{{ state.demos | tojson }}</script>
+<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>

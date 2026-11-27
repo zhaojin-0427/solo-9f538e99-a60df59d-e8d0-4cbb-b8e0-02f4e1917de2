@@ -1,0 +1,17 @@
+services:
+  web:
+    build: .
+    image: mural-alignment:latest
+    container_name: mural-alignment-web
+    # 默认 http://localhost:5000 ；若宿主机 5000 被占用，可用
+    # WEB_PORT=8000 docker compose up --build 改到 8000。
+    ports:
+      - "${WEB_PORT:-5000}:5000"
+    environment:
+      MURAL_DB: /data/mural.db
+    volumes:
+      - mural-data:/data
+    restart: unless-stopped
+
+volumes:
+  mural-data:

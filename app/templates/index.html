@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% set selected_a = form_values.image_a if form_values else (run.image_a if run and run.status != 'applied' else '') %}
+{% set selected_b = form_values.image_b if form_values else '' %}
+
+<section class="page-head">
+  <div class="legend">
+    <span class="legend-item"><i class="dot dot-tagged"></i>已贴签裂缝（总图坐标固定）</span>
+    <span class="legend-item"><i class="dot dot-plain"></i>未贴签裂缝（可随照片移位）</span>
+    <span class="legend-item"><i class="diamond diamond-reviewed"></i>已复核对位点</span>
+    <span class="legend-item"><i class="diamond diamond-open"></i>未复核对位点</span>
+    <span class="legend-item"><i class="badge badge-reviewed">已复核</i>对位不可撤</span>
+    <span class="legend-item"><i class="badge badge-open">未复核</i>最多撤 2 条</span>
+  </div>
+  <form method="post" action="{{ url_for('reset_form') }}"
+        onsubmit="return confirm('确定恢复内置样片与旧对位？当前更新将被清空。');">
+    <button class="btn btn-ghost" type="submit">↺ 重置为内置示例数据</button>
+  </form>
+</section>
+
+{% if form_error %}
+<div class="banner banner-error">
+  <strong>提交无效：</strong>{{ form_error }}
+</div>
+{% endif %}
+
+{% if run %}
+  {% if run.status == 'applied' %}
+  <section class="banner banner-ok" id="result">
+    <h2>✅ 已采用新对位并更新总图（记录 #{{ run.id }}）</h2>
+    <p class="summary-line">{{ run.summary }}</p>
+    <div class="result-grid">
+      <div class="result-box">
+        <h3>撤下的对位（{{ run.result.removed|length }} 条，均为未复核）</h3>
+        {% if run.result.removed %}
+        <table class="mini-table">
+          <thead><tr><th>编号</th><th>两张照片上的点选</th><th>说明</th></tr></thead>
+          <tbody>
+          {% for r in run.result.removed %}
+            <tr>
+              <td><span class="badge badge-withdrawn">{{ r.code }}</span></td>
+              <td>
+                {{ r.image_a }} ({{ r.ax|num }}, {{ r.ay|num }})<br>
+                {{ r.image_b }} ({{ r.bx|num }}, {{ r.by|num }})
+              </td>
+              <td>{{ r.note or '' }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}<p class="muted">无需撤下任何对位（0 条）。</p>{% endif %}
+      </div>
+      <div class="result-box">
+        <h3>移位裂缝的新总图坐标（{{ run.result.shifted|length }} 条）</h3>
+        {% if run.result.shifted %}
+        <table class="mini-table">
+          <thead><tr><th>裂缝</th><th>旧坐标</th><th>新坐标</th><th>位移</th></tr></thead>
+          <tbody>
+          {% for c in run.result.shifted %}
+            <tr>
+              <td><strong>{{ c.code }}</strong></td>
+              <td>({{ c.old[0]|num }}, {{ c.old[1]|num }})</td>
+              <td class="new-coord">({{ c.new[0]|num }}, {{ c.new[1]|num }})</td>
+              <td class="muted">({{ c.delta[0]|num }}, {{ c.delta[1]|num }})</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}<p class="muted">没有裂缝发生移位。</p>{% endif %}
+        <p class="muted small">已贴签裂缝受硬约束保护，坐标均照旧不变。</p>
+      </div>
+    </div>
+  </section>
+  {% else %}
+  <section class="banner banner-fail" id="result">
+    <h2>⚠️ 无解：保留原图与全部对位（记录 #{{ run.id }}）</h2>
+    <p>{{ run.result.reason or '枚举所有可行撤法后仍无法满足约束。' }}</p>
+    <p class="muted small">
+      本次尝试了 {{ run.result.tried_candidates if run.result else '—' }} 种撤法
+      （仅允许撤下至多 2 条未复核对位）。数据库中的总图位置与对位台账均未改动，
+      提交的点选也未写入对位表。
+    </p>
+  </section>
+  {% endif %}
+{% endif %}
+
+<div class="main-grid">
+
+  <!-- ================= 总图 ================= -->
+  <section class="card map-card" id="map">
+    <div class="card-head">
+      <h2>裂缝定位总图（按当前对位）</h2>
+      <span class="muted small">坐标单位 = 样片像素</span>
+    </div>
+    <div class="map-scroll">
+      <svg class="master-svg" viewBox="0 0 1320 680" xmlns="http://www.w3.org/2000/svg"
+           role="img" aria-label="裂缝定位总图">
+        <rect x="0" y="0" width="1320" height="680" fill="#f1e7d0"/>
+        <g stroke="#ddcda6" stroke-width="1">
+          {% for gx in range(0, 1321, 40) %}
+          <line x1="{{ gx }}" y1="0" x2="{{ gx }}" y2="680"/>
+          {% endfor %}
+          {% for gy in range(0, 681, 40) %}
+          <line x1="0" y1="{{ gy }}" x2="1320" y2="{{ gy }}"/>
+          {% endfor %}
+        </g>
+
+        {% for img in state.images %}
+        <g transform="translate({{ img.tx }},{{ img.ty }})">
+          <image href="{{ url_for('static', filename=img.file) }}"
+                 xlink:href="{{ url_for('static', filename=img.file) }}"
+                 x="0" y="0" width="{{ img.w }}" height="{{ img.h }}"/>
+          <rect x="0" y="0" width="{{ img.w }}" height="{{ img.h }}"
+                fill="none" stroke="{% if img.is_base %}#1d6f42{% else %}#5b4636{% endif %}"
+                stroke-width="{% if img.is_base %}4{% else %}2{% endif %}"/>
+          <g>
+            <rect x="8" y="8" rx="4" width="{{ 12 + img.name|length * 15 }}" height="26"
+                  fill="rgba(30,24,18,0.72)"/>
+            <text x="16" y="26" font-size="15" fill="#fff" font-weight="700">
+              {% if img.is_base %}【基准】{% endif %}{{ img.name }}
+              · ({{ img.tx|num }}, {{ img.ty|num }})
+            </text>
+          </g>
+
+          {% for c in state.cracks if c.image_id == img.id %}
+          <g class="map-crack">
+            {% if c.tagged %}
+            <circle cx="{{ c.x }}" cy="{{ c.y }}" r="11" fill="#ffd166" opacity="0.55"/>
+            <circle cx="{{ c.x }}" cy="{{ c.y }}" r="8.5" fill="#d62828"
+                    stroke="#ffd166" stroke-width="2"/>
+            <text x="{{ c.x }}" y="{{ c.y + 3.4 }}" text-anchor="middle"
+                  font-size="9" fill="#fff" font-weight="700">签</text>
+            <rect x="{{ c.x + 10 }}" y="{{ c.y - 20 }}" rx="3"
+                  width="{{ c.code|length * 9 + 8 }}" height="16"
+                  fill="rgba(120,20,20,0.85)"/>
+            <text x="{{ c.x + 14 }}" y="{{ c.y - 8 }}" font-size="11" fill="#ffe9a8"
+                  font-weight="700">{{ c.code }}</text>
+            {% else %}
+            <circle cx="{{ c.x }}" cy="{{ c.y }}" r="7" fill="#ffffff" opacity="0.85"/>
+            <circle cx="{{ c.x }}" cy="{{ c.y }}" r="5" fill="#264653"
+                    stroke="#e9f1f2" stroke-width="1.4"/>
+            <text x="{{ c.x + 9 }}" y="{{ c.y + 4 }}" font-size="11"
+                  fill="#1d3557" font-weight="700"
+                  stroke="#f1e7d0" stroke-width="3" paint-order="stroke">{{ c.code }}</text>
+            {% endif %}
+          </g>
+          {% endfor %}
+        </g>
+        {% endfor %}
+
+        <!-- 生效对位的点选端点（总图坐标）；自洽时两端点重合为一个菱形 -->
+        <g class="align-layer">
+          {% for m in state.alignment_marks %}
+          {% set acolor = '#1d6f42' if m.reviewed else '#c8862d' %}
+          <g>
+            <title>{{ m.code }}（{{ '已复核' if m.reviewed else '未复核' }}）残差 {{ m.residual }}px</title>
+            <line x1="{{ m.axm }}" y1="{{ m.aym }}" x2="{{ m.bxm }}" y2="{{ m.bym }}"
+                  stroke="{{ acolor }}" stroke-width="2.4" stroke-dasharray="7 5"
+                  opacity="0.9"/>
+            <rect x="{{ m.axm - 5 }}" y="{{ m.aym - 5 }}" width="10" height="10"
+                  transform="rotate(45 {{ m.axm }} {{ m.aym }})"
+                  fill="{{ acolor }}" stroke="#fff" stroke-width="1.6"/>
+            {% if m.residual > 2 %}
+            <circle cx="{{ m.bxm }}" cy="{{ m.bym }}" r="5.5"
+                    fill="#d62828" stroke="#fff" stroke-width="1.5"/>
+            {% endif %}
+            <text x="{{ m.mx + 9 }}" y="{{ m.my - 9 }}" font-size="12.5"
+                  font-weight="800" fill="{{ acolor }}"
+                  stroke="#f6efdd" stroke-width="3.4" paint-order="stroke">{{ m.code }}</text>
+          </g>
+          {% endfor %}
+        </g>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ================= 提交新对位 ================= -->
+  <section class="card submit-card" id="submit">
+    <div class="card-head">
+      <h2>点选同一处纹样 · 提交必须采用的新对位</h2>
+    </div>
+
+    <div class="demo-row">
+      <button type="button" class="btn btn-demo" data-demo="solvable">
+        填入有解冲突示例（撤 2 条，含移位优选）
+      </button>
+      <button type="button" class="btn btn-demo btn-demo-bad" data-demo="no_solution">
+        填入无解冲突示例（撞已复核对位）
+      </button>
+    </div>
+
+    {% if form_error %}
+    <div class="banner banner-error small">{{ form_error }}</div>
+    {% endif %}
+    <p class="form-error-js" id="js-error" hidden></p>
+
+    <form method="post" action="{{ url_for('submit_form') }}" id="align-form" novalidate>
+      <div class="pickers">
+        {% for side in ['a', 'b'] %}
+        {% set prefix = 'A' if side == 'a' else 'B' %}
+        <div class="picker">
+          <label class="picker-label" for="image-{{ side }}">{{ prefix }} 照片</label>
+          <select id="image-{{ side }}" name="image_{{ side }}" data-side="{{ side }}">
+            <option value="">— 请选择照片 —</option>
+            {% for img in state.images %}
+            <option value="{{ img.id }}"
+                    data-w="{{ img.w }}" data-h="{{ img.h }}"
+                    data-src="{{ url_for('static', filename=img.file) }}"
+                    {% if (form_values and form_values.get('image_' ~ side) == img.id) %}selected{% endif %}>
+              {{ img.name }}{% if img.is_base %}（固定）{% endif %}
+            </option>
+            {% endfor %}
+          </select>
+
+          <div class="stage" id="stage-{{ side }}">
+            <p class="stage-hint" id="hint-{{ side }}">选择照片后，在纹样上点击</p>
+            <span class="canvas" id="canvas-{{ side }}" hidden>
+              <img id="preview-{{ side }}" alt="{{ prefix }} 点选照片">
+              <span class="click-marker" id="marker-{{ side }}" hidden>
+                <span class="marker-ring"></span><span class="marker-dot"></span>
+              </span>
+            </span>
+          </div>
+
+          <div class="coord-grid">
+            <label class="num-field">X
+              <input type="number" name="{{ side }}x" id="in-{{ side }}x"
+                     min="0" max="480" step="1" inputmode="numeric"
+                     value="{{ form_values.get(side ~ 'x', '') if form_values else '' }}"
+                     placeholder="点图获取">
+            </label>
+            <label class="num-field">Y
+              <input type="number" name="{{ side }}y" id="in-{{ side }}y"
+                     min="0" max="360" step="1" inputmode="numeric"
+                     value="{{ form_values.get(side ~ 'y', '') if form_values else '' }}"
+                     placeholder="点图获取">
+            </label>
+            <span class="coord-status" id="readout-{{ side }}">未点选</span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">提交新对位并更新定位图</button>
+        <button type="button" class="btn btn-ghost" id="clear-points">清除点选</button>
+      </div>
+      <p class="muted small">
+        求解规则：新对位必须成立；基准图不动，其余照片只平移；每张图都要能定位到基准图；
+        保留对位全部成立；已贴签裂缝总图坐标不变；只撤未复核对位且不超过 2 条；
+        先比撤下条数，再比移位裂缝数。
+      </p>
+    </form>
+  </section>
+</div>
+
+<!-- ================= 对位台账 ================= -->
+<section class="card" id="alignments">
+  <div class="card-head"><h2>对位台账（SQLite）</h2>
+    <span class="muted small">共 {{ state.alignments|length }} 条记录</span>
+  </div>
+  <div class="table-scroll">
+    <table class="data-table">
+      <thead>
+      <tr>
+        <th>编号</th><th>照片 A</th><th>A 点</th><th>照片 B</th><th>B 点</th>
+        <th>隐含位移 (dB-dA)</th><th>复核</th><th>状态</th><th>来源 / 说明</th>
+      </tr>
+      </thead>
+      <tbody>
+      {% for a in state.alignments %}
+      <tr class="{% if a.status == 'withdrawn' %}row-withdrawn{% endif %}">
+        <td><strong>{{ a.code or ('#' ~ a.id) }}</strong></td>
+        <td>{{ a.image_a }}</td>
+        <td>({{ a.ax|num }}, {{ a.ay|num }})</td>
+        <td>{{ a.image_b }}</td>
+        <td>({{ a.bx|num }}, {{ a.by|num }})</td>
+        <td class="muted">({{ (a.ax - a.bx)|num }}, {{ (a.ay - a.by)|num }})</td>
+        <td>
+          {% if a.reviewed %}<span class="badge badge-reviewed">已复核</span>
+          {% else %}<span class="badge badge-open">未复核</span>{% endif %}
+        </td>
+        <td>
+          {% if a.status == 'active' %}<span class="badge badge-active">生效中</span>
+          {% else %}<span class="badge badge-withdrawn">已撤下</span>{% endif %}
+        </td>
+        <td class="muted small">{{ '修复师新提交' if a.origin == 'submitted' else '内置旧对位' }}{% if a.note %} · {{ a.note }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 裂缝台账 ================= -->
+<section class="card" id="cracks">
+  <div class="card-head"><h2>裂缝台账与当前总图坐标</h2></div>
+  <div class="table-scroll">
+    <table class="data-table">
+      <thead>
+      <tr><th>裂缝编号</th><th>所在样片</th><th>样片局部坐标</th>
+        <th>当前总图坐标</th><th>贴签状态</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+      {% for c in state.cracks %}
+      <tr>
+        <td><strong>{{ c.code }}</strong></td>
+        <td>{{ c.image_id }}</td>
+        <td>({{ c.x|num }}, {{ c.y|num }})</td>
+        <td class="new-coord">({{ c.master_x|num }}, {{ c.master_y|num }})</td>
+        <td>
+          {% if c.tagged %}<span class="badge badge-tagged">已贴签 · 坐标固定</span>
+          {% else %}<span class="badge badge-plain">未贴签</span>{% endif %}
+        </td>
+        <td class="muted small">{{ c.note or '' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 处理记录 ================= -->
+<section class="card" id="history">
+  <div class="card-head"><h2>提交与求解记录</h2></div>
+  {% if state.runs %}
+  <ul class="run-list">
+    {% for r in state.runs %}
+    <li class="run-item run-{{ r.status }}">
+      <a href="{{ url_for('index', run=r.id) }}#result">
+        <span class="run-id">#{{ r.id }}</span>
+        <span class="badge {{ 'badge-applied' if r.status == 'applied' else 'badge-nosolution' }}">
+          {{ '有解·已更新' if r.status == 'applied' else '无解·未改动' }}
+        </span>
+        <span class="run-summary">{{ r.summary }}</span>
+        <time>{{ r.created_at }}</time>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted" style="padding:12px 18px 18px;">暂无提交记录。</p>
+  {% endif %}
+</section>
+
+{% endblock %}
