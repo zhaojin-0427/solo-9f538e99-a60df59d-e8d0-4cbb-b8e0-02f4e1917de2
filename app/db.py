@@ -65,7 +65,45 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS idx_align_status ON alignments(status);
 CREATE INDEX IF NOT EXISTS idx_cracks_image ON cracks(image_id);
+
+-- 总图/台账的数据版本：每次“有解提交”或“重置”单调 +1。
+-- 无解提交不改变业务数据，版本不变。供前端做增量响应与跨标签页冲突检测。
+CREATE TABLE IF NOT EXISTS meta (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL
+);
 """
+
+STATE_VERSION_KEY = "state_version"
+
+
+def ensure_state_version(db: sqlite3.Connection) -> int:
+    """确保 meta 中存在数据版本号；缺失时补 1（不单独 commit）。"""
+    row = db.execute(
+        "SELECT value FROM meta WHERE key=?", (STATE_VERSION_KEY,)
+    ).fetchone()
+    if row is None:
+        db.execute(
+            "INSERT INTO meta(key, value) VALUES(?, '1')",
+            (STATE_VERSION_KEY,),
+        )
+        return 1
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        return 1
+
+
+def get_state_version(db: sqlite3.Connection) -> int:
+    row = db.execute(
+        "SELECT value FROM meta WHERE key=?", (STATE_VERSION_KEY,)
+    ).fetchone()
+    if row is None:
+        return ensure_state_version(db)
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        return 1
 
 
 def default_db_path() -> Path:
@@ -108,6 +146,8 @@ def init_db(db_path: str | os.PathLike | None = None) -> Path:
         db.executescript(SCHEMA)
         db.commit()
         seed_if_empty(db)
+        ensure_state_version(db)
+        db.commit()
     finally:
         db.close()
     return path

@@ -13,7 +13,7 @@
     <span class="legend-item"><i class="badge badge-reviewed">已复核</i>对位不可撤</span>
     <span class="legend-item"><i class="badge badge-open">未复核</i>最多撤 2 条</span>
   </div>
-  <form method="post" action="{{ url_for('reset_form') }}"
+  <form method="post" action="{{ url_for('reset_form') }}" id="reset-form"
         onsubmit="return confirm('确定恢复内置样片与旧对位？当前更新将被清空。');">
     <button class="btn btn-ghost" type="submit">↺ 重置为内置示例数据</button>
   </form>
@@ -25,10 +25,14 @@
 </div>
 {% endif %}
 
+<div id="result-slot" aria-live="polite">
 {% if run %}
   {% if run.status == 'applied' %}
-  <section class="banner banner-ok" id="result">
+  <section class="banner banner-ok" id="result" data-run-id="{{ run.id }}">
+    <button type="button" class="result-close" id="result-close"
+            aria-label="收起结果" title="收起结果">×</button>
     <h2>✅ 已采用新对位并更新总图（记录 #{{ run.id }}）</h2>
+    <p class="js-live-note" hidden>⚡ 页面未整页刷新：总图、台账与本结果已在同一版状态上一起更新。</p>
     <p class="summary-line">{{ run.summary }}</p>
     <div class="result-grid">
       <div class="result-box">
@@ -73,8 +77,11 @@
     </div>
   </section>
   {% else %}
-  <section class="banner banner-fail" id="result">
+  <section class="banner banner-fail" id="result" data-run-id="{{ run.id }}">
+    <button type="button" class="result-close" id="result-close"
+            aria-label="收起结果" title="收起结果">×</button>
     <h2>⚠️ 无解：保留原图与全部对位（记录 #{{ run.id }}）</h2>
+    <p class="js-live-note" hidden>⚡ 页面未整页刷新：仅更新本结果，总图与台账保持不变。</p>
     <p>{{ run.result.reason or '枚举所有可行撤法后仍无法满足约束。' }}</p>
     <p class="muted small">
       本次尝试了 {{ run.result.tried_candidates if run.result else '—' }} 种撤法
@@ -84,6 +91,7 @@
   </section>
   {% endif %}
 {% endif %}
+</div>
 
 <div class="main-grid">
 
@@ -107,7 +115,9 @@
         </g>
 
         {% for img in state.images %}
-        <g transform="translate({{ img.tx }},{{ img.ty }})">
+        <g class="map-image-layer" data-image-id="{{ img.id }}"
+           data-tx="{{ img.tx|num }}" data-ty="{{ img.ty|num }}"
+           transform="translate({{ img.tx|num }},{{ img.ty|num }})">
           <image href="{{ url_for('static', filename=img.file) }}"
                  xlink:href="{{ url_for('static', filename=img.file) }}"
                  x="0" y="0" width="{{ img.w }}" height="{{ img.h }}"/>
@@ -119,7 +129,7 @@
                   fill="rgba(30,24,18,0.72)"/>
             <text x="16" y="26" font-size="15" fill="#fff" font-weight="700">
               {% if img.is_base %}【基准】{% endif %}{{ img.name }}
-              · ({{ img.tx|num }}, {{ img.ty|num }})
+              · (<tspan class="js-img-coord" data-role="coord">{{ img.tx|num }}, {{ img.ty|num }}</tspan>)
             </text>
           </g>
 
@@ -153,7 +163,8 @@
         <g class="align-layer">
           {% for m in state.alignment_marks %}
           {% set acolor = '#1d6f42' if m.reviewed else '#c8862d' %}
-          <g>
+          <g class="alignment-mark" data-mark-id="{{ m.id }}"
+             data-mark-code="{{ m.code }}">
             <title>{{ m.code }}（{{ '已复核' if m.reviewed else '未复核' }}）残差 {{ m.residual }}px</title>
             <line x1="{{ m.axm }}" y1="{{ m.aym }}" x2="{{ m.bxm }}" y2="{{ m.bym }}"
                   stroke="{{ acolor }}" stroke-width="2.4" stroke-dasharray="7 5"
@@ -194,6 +205,8 @@
     <div class="banner banner-error small">{{ form_error }}</div>
     {% endif %}
     <p class="form-error-js" id="js-error" hidden></p>
+    <p class="sync-notice" id="sync-notice" hidden role="status"></p>
+    <p class="form-error-js" id="net-error" hidden></p>
 
     <form method="post" action="{{ url_for('submit_form') }}" id="align-form" novalidate>
       <div class="pickers">
@@ -242,9 +255,12 @@
         {% endfor %}
       </div>
 
+      <div id="inline-result-slot" class="inline-result-slot" aria-live="polite"></div>
+
       <div class="form-actions">
         <button type="submit" class="btn btn-primary">提交新对位并更新定位图</button>
         <button type="button" class="btn btn-ghost" id="clear-points">清除点选</button>
+        <span class="submit-status" id="submit-status" role="status" aria-live="polite" hidden></span>
       </div>
       <p class="muted small">
         求解规则：新对位必须成立；基准图不动，其余照片只平移；每张图都要能定位到基准图；
@@ -258,7 +274,7 @@
 <!-- ================= 对位台账 ================= -->
 <section class="card" id="alignments">
   <div class="card-head"><h2>对位台账（SQLite）</h2>
-    <span class="muted small">共 {{ state.alignments|length }} 条记录</span>
+    <span class="muted small">共 <span id="alignment-total">{{ state.alignments|length }}</span> 条记录</span>
   </div>
   <div class="table-scroll">
     <table class="data-table">
@@ -268,20 +284,22 @@
         <th>隐含位移 (dB-dA)</th><th>复核</th><th>状态</th><th>来源 / 说明</th>
       </tr>
       </thead>
-      <tbody>
+      <tbody id="alignment-tbody">
       {% for a in state.alignments %}
-      <tr class="{% if a.status == 'withdrawn' %}row-withdrawn{% endif %}">
+      <tr class="alignment-row {% if a.status == 'withdrawn' %}row-withdrawn{% endif %}"
+          data-alignment-id="{{ a.id }}" data-code="{{ a.code or ('#' ~ a.id) }}"
+          data-status="{{ a.status }}">
         <td><strong>{{ a.code or ('#' ~ a.id) }}</strong></td>
         <td>{{ a.image_a }}</td>
         <td>({{ a.ax|num }}, {{ a.ay|num }})</td>
         <td>{{ a.image_b }}</td>
         <td>({{ a.bx|num }}, {{ a.by|num }})</td>
         <td class="muted">({{ (a.ax - a.bx)|num }}, {{ (a.ay - a.by)|num }})</td>
-        <td>
+        <td data-role="review">
           {% if a.reviewed %}<span class="badge badge-reviewed">已复核</span>
           {% else %}<span class="badge badge-open">未复核</span>{% endif %}
         </td>
-        <td>
+        <td data-role="status">
           {% if a.status == 'active' %}<span class="badge badge-active">生效中</span>
           {% else %}<span class="badge badge-withdrawn">已撤下</span>{% endif %}
         </td>
@@ -302,13 +320,13 @@
       <tr><th>裂缝编号</th><th>所在样片</th><th>样片局部坐标</th>
         <th>当前总图坐标</th><th>贴签状态</th><th>说明</th></tr>
       </thead>
-      <tbody>
+      <tbody id="crack-tbody">
       {% for c in state.cracks %}
-      <tr>
+      <tr class="crack-row" data-crack-id="{{ c.id }}" data-code="{{ c.code }}">
         <td><strong>{{ c.code }}</strong></td>
         <td>{{ c.image_id }}</td>
         <td>({{ c.x|num }}, {{ c.y|num }})</td>
-        <td class="new-coord">({{ c.master_x|num }}, {{ c.master_y|num }})</td>
+        <td class="new-coord" data-role="master">({{ c.master_x|num }}, {{ c.master_y|num }})</td>
         <td>
           {% if c.tagged %}<span class="badge badge-tagged">已贴签 · 坐标固定</span>
           {% else %}<span class="badge badge-plain">未贴签</span>{% endif %}
@@ -324,10 +342,11 @@
 <!-- ================= 处理记录 ================= -->
 <section class="card" id="history">
   <div class="card-head"><h2>提交与求解记录</h2></div>
+  <div id="history-container">
   {% if state.runs %}
-  <ul class="run-list">
+  <ul class="run-list" id="run-list">
     {% for r in state.runs %}
-    <li class="run-item run-{{ r.status }}">
+    <li class="run-item run-{{ r.status }}" data-run-id="{{ r.id }}">
       <a href="{{ url_for('index', run=r.id) }}#result">
         <span class="run-id">#{{ r.id }}</span>
         <span class="badge {{ 'badge-applied' if r.status == 'applied' else 'badge-nosolution' }}">
@@ -340,8 +359,9 @@
     {% endfor %}
   </ul>
   {% else %}
-  <p class="muted" style="padding:12px 18px 18px;">暂无提交记录。</p>
+  <p class="muted" id="history-empty" style="padding:12px 18px 18px;">暂无提交记录。</p>
   {% endif %}
+  </div>
 </section>
 
 {% endblock %}

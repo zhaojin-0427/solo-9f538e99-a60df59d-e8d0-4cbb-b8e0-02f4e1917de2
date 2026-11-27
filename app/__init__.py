@@ -12,7 +12,7 @@ from flask import (
 from .db import get_db, init_app, init_db
 from .seed_data import reset_all
 from .services import (
-    ValidationError, get_run, load_state, submit_alignment,
+    StaleStateError, ValidationError, get_run, load_state, submit_alignment,
 )
 from .scene import ensure_sample_files
 
@@ -86,23 +86,47 @@ def create_app(database: str | Path | None = None) -> Flask:
     def api_state():
         return jsonify(load_state(get_db()))
 
+    @app.get("/api/version")
+    def api_version():
+        return jsonify(version=load_state(get_db())["version"])
+
     @app.post("/api/submit")
     def api_submit():
         db = get_db()
         data = request.get_json(silent=True)
         if data is None:
             data = request.form.to_dict()
+
+        raw_version = data.get("base_version")
         try:
-            run = submit_alignment(db, data)
+            base_version = int(raw_version) if raw_version not in (None, "") else None
+        except (TypeError, ValueError):
+            base_version = None
+
+        try:
+            run = submit_alignment(db, data, expected_version=base_version)
         except ValidationError as exc:
             return jsonify(status="invalid", error=str(exc)), 400
-        return jsonify(_api_run(run))
+        except StaleStateError as exc:
+            # 其他标签页已提交或重置：要求前端补齐完整总图与台账后再提交。
+            return jsonify(
+                status="stale_state",
+                error=str(exc),
+                version=exc.current_version,
+                state=load_state(db),
+            ), 409
+
+        body = _api_run(run)
+        body["version"] = run.get("version")
+        body["delta"] = run.get("delta")
+        return jsonify(body)
 
     @app.post("/api/reset")
     def api_reset():
         db = get_db()
         reset_all(db)
-        return jsonify(ok=True, state=load_state(db))
+        state = load_state(db)
+        return jsonify(ok=True, version=state["version"], state=state)
 
     @app.get("/api/runs/<int:run_id>")
     def api_run_detail(run_id: int):

@@ -224,10 +224,31 @@ def seed_if_empty(db):
 
 
 def reset_all(db):
-    """清空业务数据并重新写入内置样片。"""
+    """清空业务数据并重新写入内置样片。
+
+    数据版本号单调 +1（绝不回退到旧值），这样即使浏览器停在更早的版本，
+    重置后也一定能通过 base_version 校验发现状态已过期。
+    """
+    row = db.execute(
+        "SELECT value FROM meta WHERE key='state_version'"
+    ).fetchone()
+    try:
+        old_version = int(row["value"]) if row is not None else 1
+    except (TypeError, ValueError):
+        old_version = 1
+
     for table in ("runs", "alignments", "cracks", "images"):
         db.execute(f"DELETE FROM {table}")
     # 复位自增 id，让演示对位编号保持稳定
     db.execute("DELETE FROM sqlite_sequence WHERE name IN ('runs','alignments')")
     db.commit()
-    return seed_if_empty(db)
+    seeded = seed_if_empty(db)
+
+    next_version = old_version + 1
+    db.execute(
+        """INSERT INTO meta(key, value) VALUES('state_version', ?)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+        (str(next_version),),
+    )
+    db.commit()
+    return seeded

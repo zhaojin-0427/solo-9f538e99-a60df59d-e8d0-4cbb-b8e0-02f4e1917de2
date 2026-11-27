@@ -51,9 +51,14 @@ python selftest.py
 # 也兼容： pytest -q
 ```
 
-共 21 个用例（纯求解器 + Flask/SQLite 接口/事务），覆盖：0/1/2 条撤下、
+共 27 个 Python 用例（纯求解器 + Flask/SQLite 接口/事务/版本协议），覆盖：0/1/2 条撤下、
 “同撤条数比移位裂缝数”的优选、连通性、贴签钉死、基准固定、
-需要撤 3 条（超过上限）的无解、撞已复核对位的无解，以及 HTTP/表单/重置通道。
+需要撤 3 条（超过上限）的无解、撞已复核对位的无解，以及 HTTP/表单/重置通道、
+增量 delta、`base_version` 冲突（409）与版本单调递增。
+
+另有可选的真实浏览器端到端脚本 `tests/browser/e2e.js`（Playwright/Chromium，
+68 项断言），覆盖不整页重载、滚动位置与未动图层保留、两标签页交错提交/重置、
+旧响应晚到、网络失败保留现状等本次改造点。
 
 ### 内置种子数据的两个标准情形
 
@@ -69,17 +74,43 @@ python selftest.py
 | `GET /` | 操作页（总图、点选台、对位/裂缝台账、处理记录、结果横幅） |
 | `POST /submit` | 无 JS 也可用的表单提交，PRG 跳转到 `/?run=<id>` |
 | `POST /reset` | 表单重置回内置示例 |
-| `GET /api/state` | 全部图像（含当前平移）、对位、裂缝（含当前总图坐标）、记录、示例载荷 |
-| `POST /api/submit` | JSON 提交：`{image_a,image_b,ax,ay,bx,by}`，返回求解与落库结果 |
-| `POST /api/reset` | JSON 重置 |
+| `GET /api/state` | 全部图像（含当前平移）、对位、裂缝（含当前总图坐标）、记录、示例载荷、`version` |
+| `GET /api/version` | 仅返回当前数据版本 `{version}` |
+| `POST /api/submit` | JSON 提交：`{image_a,image_b,ax,ay,bx,by,base_version}`，按版本返回增量或 409 |
+| `POST /api/reset` | JSON 重置，返回新 `version` 与完整 `state` |
 | `GET /api/runs/<id>` | 某次提交的完整结果 |
 | `GET /healthz` | 健康检查 |
+
+### 版本与增量协议（本次“不整页重载”改造）
+
+SQLite `meta.state_version` 是总图/台账的数据版本，初始为 `1`：
+**有解提交 +1、重置单调 +1（绝不回退），无解提交不变**。提交事务用
+`BEGIN IMMEDIATE` 把“读版本 → 求解 → 落库 → 版本 +1”串行化，多 worker /
+多标签页并发时同一版本只有一个提交能成功，其余拿到 `409`。
+
+- `base_version` 等于当前版本时，`POST /api/submit` 返回：
+  - `applied`：除原有 `removed[] / shifted[] / new_alignment.code` 外，
+    另有新的 `version` 与 `delta`。`delta.images[]` **只含平移真的变化的样片**，
+    `cracks[]` 只含随移动样片移位的裂缝新总图坐标，
+    `alignment_marks_upsert[] / alignment_marks_remove[]` 分别是需要刷新几何
+    （新对位 + 端点落在移动样片上的保留对位）和需要从总图删除的标记，
+    以及 `alignments_upsert[] / removed_alignment_ids / alignment_total`。
+    前端只 patch 这些节点，**没动的样片 `<g data-image-id>` 图层节点原样保留**。
+  - `no_solution`：`version` 不变、`delta: null`，前端只切换结果区。
+- `base_version` 过期（另一标签页已提交或重置）时返回
+  `409 {status:"stale_state", version, state}`，**不写任何 run/对位**。
+  前端随即 `GET /api/state` 重取完整总图与台账整体补齐（保留点选台输入），
+  再用新版本自动重提一次。
+- 前端用单调请求序号 + 响应版本号双重守卫：**较旧的响应晚到时直接丢弃**，
+  页面保持已经显示的新状态；网络/5xx 失败不做乐观改动，总图与台账原样保留。
+- 不带 `base_version` 的调用（旧脚本/测试）不做版本检查，行为与以前一致。
 
 `POST /api/submit` 的 `status`：
 
 - `applied`：含 `removed[]`（撤下对位快照）、`shifted[]`（裂缝 `old/new/delta` 坐标）、
-  `new_alignment.code`；
+  `new_alignment.code`，以及上述 `version / delta`；
 - `no_solution`：含 `reason` 与尝试过的候选数，数据库无改动；
+- `stale_state`（HTTP 409）：浏览器版本过期，附当前完整 `state`；
 - `invalid`（HTTP 400）：选图相同、坐标越界等输入问题。
 
 ## 代码结构
@@ -94,29 +125,57 @@ app/
   __init__.py      # Flask 工厂与路由（页面 + JSON API）
   templates/       # base.html / index.html
   static/          # style.css、app.js（坐标换算与点选标记）、samples/*.svg
-tests/             # test_solver.py、test_api.py
-selftest.py        # 一键跑全部用例并说明两种关键情形
+tests/             # test_solver.py、test_api.py（27 用例）；browser/e2e.js 为可选 Playwright 核对
+selftest.py        # 一键跑全部 Python 用例并说明两种关键情形
 Dockerfile / docker-compose.yml / requirements.txt
 ```
 
-## 本次完工核对说明
+## 本次完工核对说明（不整页重载 / 增量 / 多标签页一致性）
 
-**已实现**：上述全部业务规则、页面、API、SQLite 持久化、Docker/Compose 文件、自测。
+**本次新增/改造的功能**：
 
-**已验证（在开发沙箱内实际执行）**：
+- 提交改为 `fetch` JSON，不再整页重载；窗口与 `.map-scroll` 总图视口位置原样保留，
+  结果内联展开在提交按钮上方（可收起），总图、两张台账、处理记录与结果在同一同步段切换。
+- 新增 `meta.state_version` 版本号与增量 `delta` 协议（见上节）：同版只传变动，
+  没动的样片图层 DOM 节点完全保留；移动样片的 `<g transform>`、随片裂缝台账坐标、
+  保留对位标记几何、新对位标记、撤下标记删除、台账“已撤下”徽标/行样式均就地更新。
+- 跨标签页：提交带 `base_version`；遇到另一标签页提交/重置造成的 `409 stale_state`，
+  自动重取 `/api/state` 完整总图与台账补齐，再以新版本重提一次，并显示补齐提示。
+- 竞态：单调 `latestSeq` + 响应版本号双守卫，晚到的旧响应整体丢弃；
+  网络错误 / 5xx / 400 时不做任何乐观 DOM 改动，当前总图与台账保留并给出错误提示。
+- 传统无 JS 表单 PRG 通道保持可用；新增 6 个版本/增量/冲突 Python 用例。
 
-- `python selftest.py` / `pytest -q`：21 个用例全部通过；
-- 用 Flask 开发服务器和与 Docker 相同参数的 gunicorn
-  （`--workers 2 --preload wsgi:application`）实际启动，
-  经 HTTP 验证了有解落库、无解不变、表单 302、重置、静态 SVG、健康检查；
-- `node --check static/app.js` 通过；5 个 SVG 均为合法 XML；
+**已验证（在本沙箱内实际执行）**：
+
+- `python -m pytest tests -q` / `python selftest.py`：**27 个 Python 用例全部通过**；
+  `node --check app/static/app.js` 通过。
+- 用与 Dockerfile 完全相同的 gunicorn 参数
+  （`--workers 2 --preload wsgi:application`，独立临时 SQLite 库）实际启动，
+  经 HTTP 验证：同版增量只含 `img2`、`base_version=1` 的旧客户端在提交后稳定收到
+  `409`、无解版本不变且 `delta=null`、重置使版本单调 +1；
+  8 个并发同版本提交恰好 1 个 `200`、7 个 `409`，无 5xx / 锁错误。
+- 在沙箱内下载解压 Debian 依赖库到用户目录，让 Playwright 的真实 Chromium 跑起来，
+  `tests/browser/e2e.js` **68 项断言全部通过**，覆盖：
+  有解增量/无重载/滚动位置与未动节点保留、无解只更新结果、
+  两个标签页交错提交（409→重取→重提）、交错重置、
+  用 `page.route` 卡住并倒序放行响应验证旧响应不覆盖新状态、
+  `route.abort` 网络失败保留现状及恢复后再提交、保留对位标记几何更新。
+  另用真实鼠标按比例点选两张样片并点击提交成功，且截图人工核对了
+  总图移位、标记增删、台账撤下/新行、裂缝新坐标与内联结果面板。
+- 5 个 SVG 均为合法 XML，`python -m app.scene` 重新生成的文件与仓库版本逐字节一致；
   `docker-compose.yml` 通过 YAML 解析。
 
-**未在此环境验证 / 未完成**：
+**未在此环境验证 / 剩下的工作**：
 
-- 该沙箱内没有安装 Docker CLI/守护进程，因此 **`docker compose up --build`
-  本身没有在本机实际跑过**；Dockerfile 仅基于 `python:3.12-slim` 安装
-  `requirements.txt` 并以已验证的 gunicorn 命令启动，配置已做静态校验。
-- 沙箱内没有无头浏览器，未做像素级/真实点击的浏览器自动化验证；
-  点选坐标按 `getBoundingClientRect()` 与样片原始 480×360 比例换算，
-  标记层与图片盒严格同尺寸。
+- 该沙箱内没有 Docker CLI/守护进程，且容器 `CapEff=0`、用户命名空间被禁，
+  rootless Docker 也无法启动，因此 **`docker compose up --build` 本身没能在本机实跑**。
+  已做的等价核对：Compose YAML 合法、按 `requirements.txt` 装依赖、
+  `python -m app.scene` 成功、并用 Dockerfile 的同一条 gunicorn CMD 实际提供服务验证。
+  Dockerfile / compose 沿用既有配置（命名卷 `mural-data` → `/data`，
+  `WEB_PORT` 默认 5000），在具备 Docker 的环境执行 `docker compose up --build` 即可。
+- 沙箱 Chromium 缺少中文字体，截图里中文显示为方框（不影响 DOM/行为断言）；
+  在正常带中文字体的系统或用户浏览器中显示正常。
+- 尚未做跨浏览器（Firefox/WebKit）与真实多人远程并发的验证；
+  当前冲突策略是“过期即重取完整状态并自动重提一次”，
+  若产品上希望冲突后改为“提示并等待修复师再次手动确认”，只需调整 `app.js`
+  中 `stale_state` 分支（后端 409 与完整 `state` 已就绪，两种交互都容易实现）。

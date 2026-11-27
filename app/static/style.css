@@ -15,7 +15,7 @@
 
 * { box-sizing: border-box; }
 
-html { scroll-behavior: smooth; }
+html { scroll-behavior: smooth; overflow-anchor: none; }
 
 body {
   margin: 0;
@@ -331,3 +331,100 @@ body {
   .pickers { grid-template-columns: 1fr; }
   .topbar h1 { font-size: 17px; }
 }
+
+/* ---------- 就地 AJAX 更新：提示 / 结果停靠板 / 闪动 ---------- */
+
+/* 让 hidden 属性在任何 display 类面前都可靠隐藏（含 .canvas 等） */
+[hidden] { display: none !important; }
+
+.sync-notice {
+  margin: 10px 18px 0;
+  padding: 8px 12px;
+  background: #e8f1fb;
+  border: 1px solid #a9c6e6;
+  color: #1f4e79;
+  border-radius: 9px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.submit-status {
+  font-size: 13px;
+  color: var(--blue);
+  font-weight: 700;
+}
+.btn.is-loading { opacity: .72; }
+.btn-primary.is-loading::after {
+  content: "…";
+  display: inline-block;
+  animation: dots 1s steps(4, end) infinite;
+}
+@keyframes dots { 0% { width: 0; } 100% { width: 1.1em; } }
+
+/* 提交后结果以右下角停靠板呈现：不移动窗口/总图滚动位置即可看到 */
+/* JS 提交后，结果内联展开在提交按钮上方：不遮挡、不跳页 */
+.result-close {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .08);
+  color: #5a4a30;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.result-close:hover { background: rgba(0, 0, 0, .16); }
+.banner { position: relative; }
+.js-live-note {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--green);
+  margin: 2px 0 6px;
+}
+.banner-fail .js-live-note { color: #9a5b06; }
+.inline-result-slot:empty { display: none; }
+#result.result-inline {
+  margin: 12px 18px 0;
+  padding: 12px 38px 12px 14px;
+  animation: dockIn .2s ease-out;
+}
+#result.result-inline h2 { font-size: 15.5px; }
+#result.result-inline .result-grid { grid-template-columns: 1fr; gap: 10px; margin-top: 8px; }
+#result.result-inline .result-box { padding: 6px 10px 10px; }
+#result.result-inline .mini-table { font-size: 12.5px; }
+@keyframes dockIn {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* 本次变动节点的短暂高亮 */
+@keyframes layerFlash {
+  0% { opacity: .4; }
+  25% { opacity: 1; }
+  100% { opacity: 1; }
+}
+.map-image-layer.layer-flash { animation: layerFlash 1.5s ease-out; }
+
+@keyframes markFlash {
+  0% { opacity: .25; }
+  30% { opacity: 1; }
+  100% { opacity: 1; }
+}
+.alignment-mark.mark-flash { animation: markFlash 1.6s ease-out; }
+
+@keyframes rowFlash {
+  0% { background: #ffe9a8; }
+  100% { background: transparent; }
+}
+.alignment-row.row-flash > td,
+.crack-row.row-flash > td { animation: rowFlash 1.8s ease-out; }
+
+@keyframes cellFlash {
+  0% { background: #b9f0cd; }
+  100% { background: transparent; }
+}
+td.cell-flash { animation: cellFlash 1.8s ease-out; border-radius: 4px; }
